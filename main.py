@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -58,6 +58,13 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+
+# Admin kontrolü için
+def verify_admin(email: str):
+    admin_email = os.getenv("ADMIN_EMAIL", "berkbuber95@gmail.com")
+    if email != admin_email:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return True
 
 # Language detection
 def detect_language(text: str) -> str:
@@ -255,14 +262,181 @@ async def delete_conversation(conversation_id: str):
         print(f"Error deleting conversation: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+# ADMIN ENDPOINTS
+# Tüm kullanıcıları listele
+@app.get("/admin/users")
+async def get_all_users(admin_email: str):
+    verify_admin(admin_email)
+    try:
+        db = SessionLocal()
+        users = db.query(ChatHistory.user_email).distinct().all()
+        user_list = [user[0] for user in users]
+        db.close()
+        return {"users": user_list, "total": len(user_list)}
+    except Exception as e:
+        print(f"Error fetching users: {str(e)}")
+        return {"users": [], "total": 0}
+
+# Belirli kullanıcının tüm konuşmalarını getir
+@app.get("/admin/user/{user_email}/conversations")
+async def get_user_conversations(user_email: str, admin_email: str):
+    verify_admin(admin_email)
+    try:
+        db = SessionLocal()
+        conversations = db.query(ChatHistory.conversation_id).filter(
+            ChatHistory.user_email == user_email
+        ).distinct().all()
+        
+        conv_list = [c[0] for c in conversations]
+        db.close()
+        return {"conversations": conv_list, "user": user_email, "total": len(conv_list)}
+    except Exception as e:
+        print(f"Error fetching user conversations: {str(e)}")
+        return {"conversations": [], "user": user_email, "total": 0}
+
+# Tüm mesajları getir (admin için)
+@app.get("/admin/all-messages")
+async def get_all_messages(admin_email: str, limit: int = 100, offset: int = 0):
+    verify_admin(admin_email)
+    try:
+        db = SessionLocal()
+        
+        # Toplam mesaj sayısını al
+        total_count = db.query(ChatHistory).count()
+        
+        # Mesajları al (en yeniden eskiye)
+        messages = db.query(ChatHistory).order_by(
+            ChatHistory.id.desc()
+        ).offset(offset).limit(limit).all()
+        
+        result = []
+        for msg in messages:
+            result.append({
+                "id": msg.id,
+                "user_email": msg.user_email,
+                "conversation_id": msg.conversation_id,
+                "user_message": msg.user_message,
+                "assistant_response": msg.assistant_response,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None
+            })
+        
+        db.close()
+        return {
+            "messages": result, 
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < total_count
+        }
+    except Exception as e:
+        print(f"Error fetching all messages: {str(e)}")
+        return {"messages": [], "total": 0, "limit": limit, "offset": offset, "has_more": False}
+
+# Kullanıcı istatistikleri
+@app.get("/admin/stats")
+async def get_admin_stats(admin_email: str):
+    verify_admin(admin_email)
+    try:
+        db = SessionLocal()
+        
+        # Toplam kullanıcı sayısı
+        total_users = db.query(ChatHistory.user_email).distinct().count()
+        
+        # Toplam mesaj sayısı
+        total_messages = db.query(ChatHistory).count()
+        
+        # Toplam konuşma sayısı
+        total_conversations = db.query(ChatHistory.conversation_id).distinct().count()
+        
+        # Bugünkü mesajlar
+        today = datetime.utcnow().date()
+        today_messages = db.query(ChatHistory).filter(
+            ChatHistory.timestamp >= datetime.combine(today, datetime.min.time())
+        ).count()
+        
+        # En aktif kullanıcılar (son 30 gün)
+        from sqlalchemy import func, text
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        
+        active_users = db.query(
+            ChatHistory.user_email,
+            func.count(ChatHistory.id).label('message_count')
+        ).filter(
+            ChatHistory.timestamp >= thirty_days_ago
+        ).group_by(ChatHistory.user_email).order_by(
+            text('message_count DESC')
+        ).limit(10).all()
+        
+        db.close()
+        
+        return {
+            "total_users": total_users,
+            "total_messages": total_messages,
+            "total_conversations": total_conversations,
+            "today_messages": today_messages,
+            "active_users": [
+                {"email": user[0], "message_count": user[1]} 
+                for user in active_users
+            ]
+        }
+    except Exception as e:
+        print(f"Error fetching admin stats: {str(e)}")
+        return {
+            "total_users": 0,
+            "total_messages": 0,
+            "total_conversations": 0,
+            "today_messages": 0,
+            "active_users": []
+        }
+
+# Belirli kullanıcının mesajlarını ara
+@app.get("/admin/search")
+async def search_messages(admin_email: str, query: str = "", user_email: str = "", limit: int = 50):
+    verify_admin(admin_email)
+    try:
+        db = SessionLocal()
+        
+        filters = []
+        if query:
+            filters.append(ChatHistory.user_message.contains(query))
+        if user_email:
+            filters.append(ChatHistory.user_email == user_email)
+        
+        if filters:
+            messages = db.query(ChatHistory).filter(*filters).order_by(
+                ChatHistory.id.desc()
+            ).limit(limit).all()
+        else:
+            messages = db.query(ChatHistory).order_by(
+                ChatHistory.id.desc()
+            ).limit(limit).all()
+        
+        result = []
+        for msg in messages:
+            result.append({
+                "id": msg.id,
+                "user_email": msg.user_email,
+                "conversation_id": msg.conversation_id,
+                "user_message": msg.user_message,
+                "assistant_response": msg.assistant_response,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None
+            })
+        
+        db.close()
+        return {"messages": result, "query": query, "user_email": user_email}
+        
+    except Exception as e:
+        print(f"Error searching messages: {str(e)}")
+        return {"messages": [], "query": query, "user_email": user_email}
+
 # Root endpoint
 @app.get("/")
 def read_root():
     return {
         "message": "OrionBot API - AI Chatbot Backend", 
         "status": "running",
-        "features": ["Chat History", "Multi-language Support"],
-        "version": "1.0.0"
+        "features": ["Chat History", "Multi-language Support", "Admin Panel"],
+        "version": "1.1.0"
     }
 
 # Test endpoint
