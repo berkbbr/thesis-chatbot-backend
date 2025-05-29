@@ -133,7 +133,7 @@ def chat_endpoint(req: ChatRequest):
             # Call OpenAI API
             print("Calling OpenAI API...")
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4",
                 messages=conversation_memory[conv_id],
                 temperature=0.8,
                 max_tokens=500
