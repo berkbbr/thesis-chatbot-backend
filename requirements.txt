@@ -7,3 +7,6 @@ psycopg2-binary
 pydantic
 python-multipart
 langdetect
+python-jose[cryptography]
+google-auth
+google-auth-oauthlib
