@@ -6,7 +6,6 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from langdetect import detect, DetectorFactory
 from datetime import datetime
-from datetime import datetime, timedelta
 from typing import List, Optional
 import os
 import json
@@ -355,18 +354,25 @@ async def get_admin_stats(admin_email: str):
             ChatHistory.timestamp >= datetime.combine(today, datetime.min.time())
         ).count()
         
-        # En aktif kullanıcılar (son 30 gün)
-        from sqlalchemy import func, text
+        # En aktif kullanıcılar (son 30 gün) - basitleştirilmiş
+        from sqlalchemy import func
+        from datetime import timedelta
+        
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
         
-        active_users = db.query(
+        active_users_query = db.query(
             ChatHistory.user_email,
             func.count(ChatHistory.id).label('message_count')
         ).filter(
             ChatHistory.timestamp >= thirty_days_ago
         ).group_by(ChatHistory.user_email).order_by(
-            text('message_count DESC')
+            func.count(ChatHistory.id).desc()
         ).limit(10).all()
+        
+        active_users = [
+            {"email": user[0], "message_count": user[1]} 
+            for user in active_users_query
+        ]
         
         db.close()
         
@@ -375,13 +381,11 @@ async def get_admin_stats(admin_email: str):
             "total_messages": total_messages,
             "total_conversations": total_conversations,
             "today_messages": today_messages,
-            "active_users": [
-                {"email": user[0], "message_count": user[1]} 
-                for user in active_users
-            ]
+            "active_users": active_users
         }
     except Exception as e:
         print(f"Error fetching admin stats: {str(e)}")
+        traceback.print_exc()
         return {
             "total_users": 0,
             "total_messages": 0,
